@@ -51,6 +51,10 @@ original_total_size=0
 converted_total_size=0
 progress_file="$input_dir/heic.log.csv"
 
+
+# Create an empty associative array to store processed image paths
+declare -A image_paths
+
 # Check if progress file exists
 if [ -f "$progress_file" ]; then
     # Read the progress file and retrieve processed files and sizes
@@ -58,14 +62,20 @@ if [ -f "$progress_file" ]; then
         processed_files+=("$file_path")
         original_total_size=$((original_total_size + original_size))
         converted_total_size=$((converted_total_size + converted_size))
+        image_paths["$file_path"]=1
     done < "$progress_file"
+    
+    # Get the index of the last processed file
+    last_processed_index=$((${#processed_files[@]} - 1))
+    current_image=$last_processed_index
+    
 else
     processed_files=()
 fi
 
 for jpg_image in "${jpg_images[@]}"; do
     # Check if the file has already been processed
-    if [[ "${processed_files[*]}" =~ "$jpg_image" ]]; then
+    if [[ "${image_paths[$jpg_image]}" ]]; then
         echo "Skipping already processed file: $jpg_image"
         continue
     fi
@@ -84,32 +94,45 @@ for jpg_image in "${jpg_images[@]}"; do
 
     # Run the conversion command
     convert "$jpg_image" -resize 4000x3000 "$output_file"
+    convert_status=$?
+    
     exiftool -TagsFromFile "$jpg_image" -all:all "$output_file"
+    exiftool_status=$?
 
-        # Get the sizes of the original and converted files
+    # Get the sizes of the original and converted files
     original_size=$(stat -c%s "$jpg_image")
-    converted_size=$(stat -c%s "$output_file")
-
-    echo "Original size: $(numfmt --to=iec-i --suffix=B "$original_size")"
-    echo "Converted size: $(numfmt --to=iec-i --suffix=B "$converted_size")"
-    echo "------------------------------"
-
-    # Store the processed file path, original size, and converted size in the progress file as CSV
-    echo "$jpg_image,$original_size,$converted_size" >> "$progress_file"
-
-    # Increment the total sizes
-    original_total_size=$((original_total_size + original_size))
-    converted_total_size=$((converted_total_size + converted_size))
+    converted_size=$(stat -c%s "$output_file")    
 
     # Set the file created and modified dates to match the original file
     original_date=$(stat -c %y "$jpg_image")
-    touch -r "$jpg_image" -d "$original_date" "$output_file"
+    touch -r "$jpg_image" -d "$original_date" "$output_file"    
+    touch_status=$?
 
     # Delete the original .heic_original file
     rm -f "${output_file}_original"
-
-    # Sleep for one second
-    sleep 1
+    
+    
+    
+    # Check the exit statuses of the convert and exiftool commands
+    if [ $convert_status -eq 0 ] && [ $exiftool_status -eq 0 ] && [ $touch_status -eq 0 ]; then
+    	echo "Original size: $(numfmt --to=iec-i --suffix=B "$original_size")"
+	    echo "Converted size: $(numfmt --to=iec-i --suffix=B "$converted_size")"
+        
+        # Increment the total sizes
+    	original_total_size=$((original_total_size + original_size))
+	    converted_total_size=$((converted_total_size + converted_size))
+        
+        # Store the processed file path, original size, and converted size in the progress file as CSV
+        echo "$jpg_image,$original_size,$converted_size" >> "$progress_file"
+        
+        # Sleep for one second
+	    sleep 1
+    else
+        echo "Error occurred during image conversion: $jpg_image"
+        exit 1  # Exit the script with a non-zero status indicating an error
+    fi
+    
+    echo "------------------------------"
 done
 
 # Remove the progress file if all images have been processed
